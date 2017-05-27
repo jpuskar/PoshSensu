@@ -1,5 +1,7 @@
-﻿Function Import-JsonConfig
-{
+# TODO: Timeout on Send-TCPData, that if it's stuck reading for long enough we should throw.
+# TODO: If Send-TCPData doesn't return 'Ok', then wait and try again a few times.
+
+Function Import-JsonConfig {
 <#
     .Synopsis
         Loads the JSON Config File for PoshSensu.
@@ -20,72 +22,62 @@
 
 #>
     [CmdletBinding()]
-    Param
-    (
+    Param(
         # Configuration File Path
         [Parameter(Mandatory = $true)]
         $ConfigPath
     )
 
-    $Config = Get-Content -Path $ConfigPath | Out-String | ConvertFrom-Json
+    $config = Get-Content -Path $ConfigPath | Out-String | ConvertFrom-Json
 
     # If checks directory is '.\Checks', this needs to be searched in the module path.
-    if ($Config.checks_directory -eq '.\Checks')
-    {
-        $Config.checks_directory = Join-Path -Path $here -ChildPath 'Checks'
+    if ($config.checks_directory -eq '.\Checks') {
+        $config.checks_directory = Join-Path -Path $here -ChildPath 'Checks'
     }
 
     $checksFullPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Config.checks_directory)
 
-    if (-not(Test-Path -Path $checksFullPath))
-    {
-        throw "Configuration File Error: check_path in the configuration file does not exist ($checksFullPath)."
+    If (-not(Test-Path -Path $checksFullPath)){
+        Throw ("Configuration File Error: check_path in the configuration file does not exist (" + $checksFullPath + ").")
     }
 
     # If check groups is empty, make an empty array as we will have some checks to add from the additional config files
-    if ([string]::IsNullOrEmpty($Config.check_groups))
-    {
-        $Config.check_groups = @()
+    if ([string]::IsNullOrEmpty($Config.check_groups)){
+        $config.check_groups = @()
     }
 
     # Folder containing check group additional configuration files
 
     # Check if value is not null or empty
-    if (-not([string]::IsNullOrEmpty($Config.check_groups_path)))
-    {
-        if (Test-Path -Path $Config.check_groups_path)
-        {
+    If (-not([string]::IsNullOrEmpty($config.check_groups_path))){
+        If (Test-Path -Path $config.check_groups_path){
             # Get only the json files
-            $additionalChecks = Get-ChildItem -Path $Config.check_groups_path -Include "*.json" -Recurse
+            $additionalChecks = Get-ChildItem -Path $config.check_groups_path -Include "*.json" -Recurse
 
             # Loop through each and add to check groups
-            ForEach ($ac in $additionalChecks)
-            {
-                Write-Verbose "Adding CheckGroup configuration file $($Config.check_groups_path)"
+            ForEach ($ac in $additionalChecks){
+                Write-Verbose ("Adding CheckGroup configuration file " + $config.check_groups_path + " )")
                 $cg = Get-Content -Path $ac.FullName | Out-String | ConvertFrom-Json
-                $Config.check_groups += $cg
+                $config.check_groups += $cg
             }
         }
-        else
-        {
-            throw "Configuration File Error: check_groups_path in the configuration file does not exist ($($Config.check_groups_path))"
+        Else {
+            Throw ("Configuration File Error: check_groups_path in the configuration file does not exist (" + $config.check_groups_path + " )")
         }
     }
 
     # Sort the checks by max exeuction time so they can be started first
-    $Config.check_groups = $Config.check_groups | Sort-Object -Property max_execution_time
+    $config.check_groups = $config.check_groups | Sort-Object -Property max_execution_time
 
     # Add the date when the configuration file was last written
-    Add-Member -InputObject $Config –NotePropertyName last_config_update –NotePropertyValue (Get-Item -Path $ConfigPath).LastWriteTime
+    $config | Add-Member –NotePropertyName "last_config_update" –NotePropertyValue (Get-Item -Path $ConfigPath).LastWriteTime
 
-    Return $Config
+    Return $config
 }
 
-function Start-BackgroundCollectionJob
-{
+function Start-BackgroundCollectionJob {
     [CmdletBinding()]
-    Param
-    (
+    Param (
         # Job Name
         [Parameter(Mandatory=$true)]
         $Name,
@@ -100,24 +92,23 @@ function Start-BackgroundCollectionJob
         $InitializationScript
     )
     
-    $Config = Import-JsonConfig -ConfigPath $configPath
+    $config = Import-JsonConfig -ConfigPath $configPath
 
     $loggingDefaults = @{
-        'Path' = Join-Path -ChildPath $Config.logging_filename -Path $Config.logging_directory
-        'MaxFileSizeMB' = $Config.logging_max_file_size_mb
+        'Path' = Join-Path -ChildPath $config.logging_filename -Path $config.logging_directory
+        'MaxFileSizeMB' = $config.logging_max_file_size_mb
         'ModuleName' = $MyInvocation.MyCommand.Name
-        'ShowLevel' = $Config.logging_level
+        'ShowLevel' = $config.logging_level
     }
 
     # Remove any jobs with the same name as the one that is going to be created
-    Remove-Job -Name $Name -Force -ErrorAction SilentlyContinue
+    Remove-Job -Name $Name -Force -ErrorAction SilentlyContinue | Out-Null
 
     $job = Start-Job -Name $Name -ArgumentList $ArgumentList -ScriptBlock $ScriptBlock -InitializationScript $InitializationScript
 
-    Write-PSLog @loggingDefaults -Method DEBUG -Message "Started Background job '$($Name)'"
+    Write-PSLog @loggingDefaults -Method DEBUG -Message ("Started background job """ + $Name + """.")
 
-    return $job
-
+    Return $job
 }
 
 <#
@@ -141,59 +132,46 @@ function Start-BackgroundCollectionJob
         WEBSITE:   http://www.hodgkins.net.au
 
 #>
-function Test-BackgroundCollectionJob
-{
+Function Test-BackgroundCollectionJob {
     [CmdletBinding()]
-    Param
-    (
+    Param (
         # Job Name
         [Parameter(Mandatory=$true)]
         [System.Management.Automation.Job]
         $Job
     )
 
-    $Config = Import-JsonConfig -ConfigPath $configPath
+    $config = Import-JsonConfig -ConfigPath $configPath
 
     $loggingDefaults = @{
-        'Path' = Join-Path -ChildPath $Config.logging_filename -Path $Config.logging_directory
-        'MaxFileSizeMB' = $Config.logging_max_file_size_mb
+        'Path' = Join-Path -ChildPath $config.logging_filename -Path $config.logging_directory
+        'MaxFileSizeMB' = $config.logging_max_file_size_mb
         'ModuleName' = $MyInvocation.MyCommand.Name
-        'ShowLevel' = $Config.logging_level
+        'ShowLevel' = $config.logging_level
     }
 
     $testedJob = $Job | Get-Job
 
-    if (($testedJob.State -eq 'Running') -and ($testedJob.HasMoreData -eq $true))
-    {
+    If (($testedJob.State -eq 'Running') -and ($testedJob.HasMoreData -eq $true)) {
         $jobResults = $testedJob | Receive-Job
         Write-PSLog @loggingDefaults -Method DEBUG -Message "Backgound Running and Has Data ::: Check group: $($testedJob.Name)"
             
         # Check if the results are not null (even though HasMoreData is true, sometimes there may not be data)
-        if ([string]::IsNullOrEmpty($jobResults))
-        {
-            return $false
-        }
-        else
-        {
+        If ([string]::IsNullOrEmpty($jobResults)) {
+            Return $false
+        } Else {
             # Convert to and from JSON as the data is a serialized object
-            return $jobResults | ConvertTo-Json | ConvertFrom-Json
+            Return $jobResults | ConvertTo-Json -Depth 10 | ConvertFrom-Json
         }
-    }
-    elseif ($testedJob.State -eq 'Failed')
-    {
-        Write-PSLog @loggingDefaults -Method WARN -Message "Failed Backgound Job ::: Check group: $($testedJob.Name) Reason: $($testedJob.ChildJobs[0].JobStateInfo.Reason)"
-        return $false
-    }
-    # Job had to be stopped
-    elseif ($testedJob.State -eq 'Stopped')
-    {
-        Write-PSLog @loggingDefaults -Method WARN -Message "Stopped Backgound Job ::: Check group: $($testedJob.Name) Reason: There is something that is breaking the infinate loop that should have occured."
-        return $false
-    }
-    else
-    {
-        Write-PSLog @loggingDefaults -Method WARN -Message "Unexpected Result From Backgound Job ::: Check group: $($testedJob.Name) Job State: $($testedJob.State) Extra Help: Please verify your check scripts manually"
-        return $false
+    } Elseif ($testedJob.State -eq 'Failed') {
+        Write-PSLog @loggingDefaults -Method WARN -Message ("Failed Backgound Job ::: Check group: " + $testedJob.Name + " Reason: " + $testedJob.ChildJobs[0].JobStateInfo.Reason + ".")
+        Return $false
+    } Elseif ($testedJob.State -eq 'Stopped') {
+        Write-PSLog @loggingDefaults -Method WARN -Message ("Stopped Backgound Job ::: Check group: " + $testedJob.Name + " Reason: There is something that is breaking the infinate loop that should have occured.")
+        Return $false
+    } Else {
+        Write-PSLog @loggingDefaults -Method WARN -Message ("Unexpected Result From Backgound Job ::: Check group: " + $testedJob.Name + " Job State: " + $testedJob.State + " Extra Help: Please verify your check scripts manually.")
+        Return $false
     }  
 }
 
@@ -219,8 +197,8 @@ Function Merge-HashtablesAndObjects {
             Mandatory = $true,
             ValueFromPipeline = $true,
             ValueFromPipelineByPropertyName = $true,
-            ParameterSetName = 'Name')
-        ]
+            ParameterSetName = 'Name'
+        )]
         [ValidateNotNull()]
         [ValidateNotNullOrEmpty()]
         $InputObjects, #
@@ -231,8 +209,8 @@ Function Merge-HashtablesAndObjects {
             Mandatory = $false, 
             ValueFromPipeline = $true,
             ValueFromPipelineByPropertyName = $true,
-            ParameterSetName = 'Name')
-        ]
+            ParameterSetName = 'Name'
+        )]
         [ValidateNotNull()]
         [ValidateNotNullOrEmpty()]
         [String[]]
@@ -241,7 +219,8 @@ Function Merge-HashtablesAndObjects {
         # Overrides memebers when adding objects
         [Parameter(
             Mandatory = $false,
-            ParameterSetName = 'Name')]
+            ParameterSetName = 'Name'
+        )]
         [ValidateNotNull()]
         [ValidateNotNullOrEmpty()]
         [Switch]
@@ -257,9 +236,9 @@ Function Merge-HashtablesAndObjects {
             $props = $null
 
             # Grab properties
-            if ($cur_obj -is [System.Collections.Hashtable]) {
+            If ($cur_obj -is [System.Collections.Hashtable]) {
                 $props = $cur_obj.keys
-            } elseif ($cur_obj -is [System.Management.Automation.PSCustomObject]) {
+            } ElseIf ($cur_obj -is [System.Management.Automation.PSCustomObject]) {
                 $props = (Get-Member -InputObject $cur_obj -MemberType Properties).Name
             }
 
@@ -293,13 +272,13 @@ Function Merge-HashtablesAndObjects {
                     }
                 }
 
-                Add-Member -InputObject $returnObject -MemberType NoteProperty -Name $cur_prop_name -Value $final_val -Force:$Force
+                $returnObject | Add-Member -MemberType NoteProperty -Name $cur_prop_name -Value $final_val -Force:$Force
             }
         }
     }
     End {
-		$json_output = convertto-json $returnObject -Depth 10 -Compress
-		Write-PSLog @loggingDefaults -Method DEBUG -Message "Merge result: $json_output"
+		$json_output = ConvertTo-Json $returnObject -Depth 10 -Compress
+		Write-PSLog @loggingDefaults -Method DEBUG -Message ("Merge result: """ + $json_output + """.")
         return $returnObject
     }
 }
@@ -314,18 +293,18 @@ Function Merge-HashtablesAndObjects {
 
    Sends a Graphite Formated metric via TCP to 10.10.10.162 on port 2003
 #>
-function Send-DataTCP
-{
+Function Send-DataTCP {
     [CmdletBinding()]
-    Param
-    (
+    Param (
         [CmdletBinding()]
         # The data to send via TCP
-        [Parameter(Mandatory=$true, 
-                   ValueFromPipeline=$true,
-                   ValueFromPipelineByPropertyName=$true, 
-                   ValueFromRemainingArguments=$false, 
-                   Position=0)]
+        [Parameter(
+            Mandatory=$true, 
+            ValueFromPipeline=$true,
+            ValueFromPipelineByPropertyName=$true, 
+            ValueFromRemainingArguments=$false, 
+            Position=0
+        )]
         $Data,
 
         # The Host or IP Address to send the metrics to
@@ -338,48 +317,73 @@ function Send-DataTCP
     )
 
     # If there is no data, do nothing. No good putting it in the Begin or process blocks
-    if (!$Data)
-    {
-        return
-    }
-    else
-    {     
-        $Config = Import-JsonConfig -ConfigPath $configPath
+    If (!$Data) {
+        Return
+    } Else {
+        $config = Import-JsonConfig -ConfigPath $configPath
 
         $loggingDefaults = @{
-            'Path' = Join-Path -ChildPath $Config.logging_filename -Path $Config.logging_directory
-            'MaxFileSizeMB' = $Config.logging_max_file_size_mb
+            'Path' = Join-Path -ChildPath $config.logging_filename -Path $config.logging_directory
+            'MaxFileSizeMB' = $config.logging_max_file_size_mb
             'ModuleName' = $MyInvocation.MyCommand.Name
-            'ShowLevel' = $Config.logging_level
+            'ShowLevel' = $config.logging_level
         }
 
-        try
-        {
+        Try {
+            $debug_msg = $null
+            $debug_msg = "Sending the following via TCP to """ + $ComputerName + """ on port """ + $Port + """."
+            $debug_msg += "\n" + [string]$data
+            Write-PSLog @loggingDefaults -Method DEBUG -Message $debug_msg
+
+            $ascii_data = [text.Encoding]::Ascii.GetBytes($data)
+
             $socket = New-Object System.Net.Sockets.TCPClient
             $socket.Connect($ComputerName, $Port)
             $stream = $socket.GetStream()
+            $reader = New-Object System.IO.StreamReader($stream)
             $writer = New-Object System.IO.StreamWriter($stream)
-            $writer.WriteLine($Data)
-            $writer.Flush()
-            Write-Verbose "Sent via TCP to $($ComputerName) on port $($Port)."
+            $writer.AutoFlush = $true
+            $writer.Write($ascii_data,0,$ascii_data.length)
+
+            # $buffer = new-object System.Byte[] 1024
+            # $encoding = new-object System.Text.AsciiEncoding
+            $debug_msg = $null
+            $debug_msg = "Data sent. Waiting for response."
+            Write-PSLog @loggingDefaults -Method DEBUG -Message $debug_msg
+            
+            #ref: https://learn-powershell.net/2014/02/22/building-a-tcp-server-using-powershell/
+            $string_builder = New-Object Text.StringBuilder
+            $active_connection = $true
+            Do {
+                [byte[]]$byte_buffer = New-Object byte[] 1024
+                Write-PSLog @loggingDefaults -Method DEBUG -Message ([string]$socket.Available + " bytes left to read.")
+                $bytes_received = $stream.Read($byte_buffer, 0, $byte_buffer.Length)
+                If ($bytes_received -gt 0) {
+                    Write-PSLog @loggingDefaults -Method DEBUG -Message ([string]$bytes_received + " bytes received.")
+                    [void]$string_builder.Append([text.Encoding]::Ascii.GetString($byte_buffer[0..($bytes_received - 1)]))
+                } Else {
+                    $active_connection = $False
+                    Break
+                }  
+            } While ($stream.DataAvailable)
+            $response = $string_builder.ToString()
+            Write-PSLog @loggingDefaults -Method DEBUG -Message ("Final TCP stream response: """ + $response + """.")
+            
+        } Catch {
+            Write-PSLog @loggingDefaults -Method ERROR -Message ("""" + $_ + """.")
         }
-        catch
-        {
-            Write-PSLog @loggingDefaults -Method ERROR -Message "$_"
-        }
-        finally
-        {
+        Finally {
             # Clean up - Checks if variable is set without throwing error.
-            if (Test-Path variable:SCRIPT:writer)
-            {
+            If (Test-Path variable:SCRIPT:reader) {
+                $reader.Dispose()
+            }
+            If (Test-Path variable:SCRIPT:writer) {
                 $writer.Dispose()
             }
-            if (Test-Path variable:SCRIPT:stream)
-            {
+            If (Test-Path variable:SCRIPT:stream) {
                 $stream.Dispose()
             }
-            if (Test-Path variable:SCRIPT:socket)
-            {
+            If (Test-Path variable:SCRIPT:socket) {
                 $socket.Dispose()
             }
 
@@ -396,67 +400,59 @@ function Send-DataTCP
 .EXAMPLE
    Import-SensuChecks -Config $Config
 #>
-function Import-SensuChecks
-{
+Function Import-SensuChecks {
     [CmdletBinding()]
-    Param
-    (
+    Param (
         # The PSObject Containing PoshSensu Configuration 
         [Parameter(Mandatory=$true)]
         [PSCustomObject]
         $Config
     )
 
-    $Config = Import-JsonConfig -ConfigPath $configPath
+    $config = Import-JsonConfig -ConfigPath $configPath
 
     $loggingDefaults = @{
-        'Path' = Join-Path -ChildPath $Config.logging_filename -Path $Config.logging_directory
-        'MaxFileSizeMB' = $Config.logging_max_file_size_mb
+        'Path' = Join-Path -ChildPath $config.logging_filename -Path $config.logging_directory
+        'MaxFileSizeMB' = $config.logging_max_file_size_mb
         'ModuleName' = $MyInvocation.MyCommand.Name
-        'ShowLevel' = $Config.logging_level
+        'ShowLevel' = $config.logging_level
     }
 
     $returnObject = @()
 
     # $Config.check_groups is ordered by max_execution_time
-    ForEach ($checkgroup in $Config.check_groups)
-    {   
+    ForEach ($checkgroup in $config.check_groups) {   
         
-        Write-PSLog @loggingDefaults -Method DEBUG -Message "Verifiying Checks ::: Group Name: $($checkgroup.group_name)"
+        Write-PSLog @loggingDefaults -Method DEBUG -Message ("Verifiying Checks ::: Group Name: " + $checkgroup.group_name + """.")
                    
         # Validates each check first
-        ForEach ($check in $checkgroup.checks)
-        {              
-            $checkPath = (Join-Path -Path $Config.checks_directory -ChildPath $check.command)
+        ForEach ($check in $checkgroup.checks) {              
+            $checkPath = (Join-Path -Path $config.checks_directory -ChildPath $check.command)
             # Using this instead of Resolve-Path so any warnings can provide the full path to the expected check location
             $checkScriptPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($checkPath)
-            Write-PSLog @loggingDefaults -Method DEBUG -Message "Looking For Check In ::: '$checkScriptPath'"
+            Write-PSLog @loggingDefaults -Method DEBUG -Message ("Looking For Check In ::: """ + $checkScriptPath + """.")
         
             # Check if the check actually exists
-            if (Test-Path -Path $checkScriptPath)
-            {
-
+            If (Test-Path -Path $checkScriptPath) {
                 $checkObject = New-Object PSObject -Property @{            
-                        Group = $checkgroup.group_name           
-                        TTL = $checkgroup.ttl
-                        Interval = $checkgroup.interval
-                        Name = $check.Name              
-                        Path = $checkScriptPath
-                        Arguments = $check.arguments
+                    Group = $checkgroup.group_name           
+                    TTL = $checkgroup.ttl
+                    Interval = $checkgroup.interval
+                    Name = $check.Name              
+                    Path = $checkScriptPath
+                    Arguments = $check.arguments
                 }
 
                 $returnObject += $checkObject
 
-                Write-PSLog @loggingDefaults -Method DEBUG -Message "Check Added ::: Name: $($check.Name) Path: $($checkScriptPath)"
-            }
-            else
-            {
-                Write-PSLog @loggingDefaults -Method WARN -Message "Check Not Found ::: Name: '$($check.Name)' Path: '$($checkScriptPath)'."
+                Write-PSLog @loggingDefaults -Method DEBUG -Message ("Check Added ::: Name: " + $check.Name + " Path: " + $checkScriptPath + ".")
+            } Else {
+                Write-PSLog @loggingDefaults -Method WARN -Message ("Check Not Found ::: Name: " + $check.Name + " Path: " + $checkScriptPath + ".")
             }
         }
     }
 
-    return $returnObject
+    Return $returnObject
 }
 
 <#
@@ -467,17 +463,15 @@ function Import-SensuChecks
 .EXAMPLE
    $backgroundJobs = Import-SensuChecks -Config $Config | Format-SensuChecks
 #>
-function Format-SensuChecks
-{
+Function Format-SensuChecks {
     [CmdletBinding()]
-    Param
-    (
+    Param (
         # Valid Checks from Import-SensuChecks
         [Parameter(
             Position=0, 
             Mandatory=$true, 
-            ValueFromPipeline=$false)
-        ]
+            ValueFromPipeline=$false
+        )]
         [ValidateNotNull()]
         [ValidateNotNullOrEmpty()]
         $SensuChecks
@@ -485,21 +479,20 @@ function Format-SensuChecks
 
     $returnArray = @{}
 
-    $Config = Import-JsonConfig -ConfigPath $configPath
+    $config = Import-JsonConfig -ConfigPath $configPath
 
     $loggingDefaults = @{
-        'Path' = Join-Path -ChildPath $Config.logging_filename -Path $Config.logging_directory
-        'MaxFileSizeMB' = $Config.logging_max_file_size_mb
+        'Path' = Join-Path -ChildPath $config.logging_filename -Path $config.logging_directory
+        'MaxFileSizeMB' = $config.logging_max_file_size_mb
         'ModuleName' = $MyInvocation.MyCommand.Name
-        'ShowLevel' = $Config.logging_level
+        'ShowLevel' = $config.logging_level
     }
     
     # Build an array of unique check groups
     $arrayOfGroups = @()
 
-    ForEach ($cg in ($SensuChecks | Select-Object Group -Unique))
-    {
-        Write-Verbose "Found '$($cg.Group)' check group."
+    ForEach ($cg in ($SensuChecks | Select-Object Group -Unique)) {
+        Write-Verbose ("Found " + $cg.Group + " check group.")
 
         # Add the unique groups to the array
         $arrayOfGroups += $cg.Group
@@ -509,12 +502,12 @@ function Format-SensuChecks
     }
         
     # Build the wrapper code for the start of each background job
-    ForEach ($checkgroup in $arrayOfGroups)
-    {
+    ForEach ($checkgroup in $arrayOfGroups) {
+        $check_group_log_file_path = Join-Path -ChildPath ("check_group__" + $checkgroup + ".log") -Path $config.logging_directory
         # Only grab one of the tests from the group so we can access the Interval and TTL
         $SensuChecks | Where-Object { $_.Group -eq $checkgroup } | Get-Unique | ForEach-Object {
 
-            Write-Verbose "Adding header code for '$($_.Group)' check group."
+            Write-Verbose ("Adding header code for " + $_.Group + " check group.")
 
             # Create the pre-job steps
             $jobCommand =
@@ -529,7 +522,7 @@ function Format-SensuChecks
                 
                     # Build Logging Object
                     `$loggingDefaults = @{}
-                    `$loggingDefaults.Path = '$($loggingDefaults.Path)'
+                    `$loggingDefaults.Path = '$($check_group_log_file_path)'
                     `$loggingDefaults.MaxFileSizeMB = $($loggingDefaults.MaxFileSizeMB)
                     `$loggingDefaults.ModuleName = 'Background Job [$($_.Group)]'
                     `$loggingDefaults.ShowLevel = '$($loggingDefaults.ShowLevel)'
@@ -546,16 +539,13 @@ function Format-SensuChecks
         }
     }
         
-    ForEach ($check in $SensuChecks)
-    {
+    ForEach ($check in $SensuChecks) {
         # Build the wrapper for each check. Escape variables will be resolved in the background job.
         $jobCommand = 
         "
-            try
-            {
+            Try {
                 # Check if this is a function being passed or a not by checking for the ~ character at the start of the arugment
-                if (""$($check.Arguments[0])"" -eq ""~"")
-                {
+                If (""$($check.Arguments[0])"" -eq ""~"") {
                     # Dot source the function
                     . ""$($check.Path)""
 
@@ -565,19 +555,13 @@ function Format-SensuChecks
                     # Execute the function and its paramaters
                     `$returnObject.$($check.Name) = Invoke-Expression -Command `$cleanedArg
 
-                }
-                else
-                {
+                } Else {
                     # Dot sources the check .ps1 and passes arguments
                     `$returnObject.$($check.Name) = . ""$($check.Path)"" $($check.Arguments)
                 }
-            }
-            catch
-            {
+            } Catch {
                 Write-PSLog @loggingDefaults -Method WARN -Message ""`$_""
-            }
-            finally
-            {
+            } Finally {
                 Write-PSLog @loggingDefaults -Method DEBUG -Message ""Check Complete ::: Name: $($check.Name) Execution Time: `$(`$stopwatch.Elapsed.Milliseconds)ms""
             }
         "
@@ -588,12 +572,11 @@ function Format-SensuChecks
     }
 
     # Build the wrapper code for the end of each background job
-    ForEach ($checkgroup in $arrayOfGroups)
-    {
+    ForEach ($checkgroup in $arrayOfGroups) {
         # Only grab one of the tests from the group so we can access the Interval
         $SensuChecks | Where-Object { $_.Group -eq $checkgroup } | Get-Unique | ForEach-Object {
             
-            Write-Verbose "Adding footer code for '$($_.Group)' check group."
+            Write-Verbose ("Adding footer code for " + $_.Group + " check group.")
 
             $jobCommand =
             "
@@ -607,14 +590,12 @@ function Format-SensuChecks
                     # Figure out how long to sleep for
                     `$timeToSleep = `$scaledInterval - `$stopwatch.Elapsed.Seconds
 
-                    if (`$stopwatch.Elapsed.Seconds -lt `$scaledInterval)
-                    {
+                    If (`$stopwatch.Elapsed.Seconds -lt `$scaledInterval) {
                         # Wait until the interval has been reached for the check.
-                        Start-Sleep -Seconds `$timeToSleep
+                        Start-Sleep -Seconds `$timeToSleep | Out-Null
                         Write-PSLog @loggingDefaults -Method DEBUG -Message ""Sleeping Check Group :::  Sleep Time: `$(`$timeToSleep)s""
                     }
-                    else
-                    {
+                    Else {
                         Write-Warning ""Job Took Longer Than Interval! Starting It Again Immediately""
                     }
 
@@ -628,11 +609,9 @@ function Format-SensuChecks
     }
 
     # Convert the value of each check group into a script block
-    ForEach ($group in $returnArray.GetEnumerator().Name)
-    {
+    ForEach ($group in $returnArray.GetEnumerator().Name) {
         $returnArray.$group = [scriptblock]::Create($returnArray.$group)
     }
 
-    return $returnArray
-
+    Return $returnArray
 }
