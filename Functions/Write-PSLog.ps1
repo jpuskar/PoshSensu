@@ -1,8 +1,6 @@
-﻿function Write-PSLog
-{
+Function Write-PSLog {
     [CmdletBinding()]
-    Param
-    (
+    Param (
         # The log message to write
         [Parameter(Mandatory=$true)]
         $Message,
@@ -30,64 +28,72 @@
         # The level of logging to show. This is useful when you only want to log and show error logs for instance
         [Parameter(Mandatory=$false)]
         [ValidateSet("DEBUG", "INFO", "WARN", "ERROR")]
-        $ShowLevel = 'DEBUG'
+        $ShowLevel = 'DEBUG',
+
+        [Parameter(Mandatory=$false)]
+        [bool]$log_to_console = $false
     )
 
-    Begin
-    {
+    Begin {
         # Create Log Directory
-        if ($Path -ne $null)
-        {
+        If ($null -ne $path) {
             # Get the paths directory
             $pathDir = Split-Path -Path $Path -Parent
 
-            if (-not(Test-Path -Path $pathDir))
-            {
+            If (-not(Test-Path -Path $pathDir)) {
                 New-Item -Path $pathDir -ItemType Directory -Force | Out-Null
             }
         }
 
-        $Message = "$(Get-Date -Format s) [$([System.Diagnostics.Process]::GetCurrentProcess().Id)] - $($ModuleName) - $($Method) - $($Message)"
+        [string]$date_str = Get-Date -Format s
+        [string]$cur_process_str = [System.Diagnostics.Process]::GetCurrentProcess().Id
+
+        $msg_hsh = @{}
+        $msg_hsh.add("Datestamp", $date_str)
+        $msg_hsh.add("CurrentProcess", $cur_process_str)
+        $msg_hsh.add("ModuleName", [string]$ModuleName)
+        $msg_hsh.add("Method", [string]$Method)
+        $msg_hsh.add("Message", [string]$message)
+        [string]$message = $msg_hsh | ConvertTo-Json -Compress
+        # $Message = "$(Get-Date -Format s) [$([System.Diagnostics.Process]::GetCurrentProcess().Id)] - $($ModuleName) - $($Method) - $($Message)"
+
+        Write-Verbose "Creating var write_ps_log_queue."
+        $script:write_ps_log_queue = New-Object System.Collections.Queue
     }
-    Process
-    {
+    Process {
         # Set values for if the type of log will be actually shown
-        if ($ShowLevel -ne $null)
-        {
-            switch ($ShowLevel)
-            {
+        If ($ShowLevel -ne $null) {
+            Switch ($ShowLevel) {
                 'DEBUG' { 
                     $showDebug = $true
                     $showInfo = $true
                     $showWarn = $true
                     $showError = $true
-                 } 
+                 }
                 'INFO' { 
                     $showDebug = $false
                     $showInfo = $true
                     $showWarn = $true
                     $showError = $true
-                 } 
+                 }
                 'WARN' { 
                     $showDebug = $false
                     $showInfo = $false
                     $showWarn = $true
                     $showError = $true
-                 }  
+                 }
                 'ERROR' { 
                     $showDebug = $false
                     $showInfo = $false
                     $showWarn = $false
                     $showError = $true
-                 } 
+                 }
             }
         }
 
-        function Write-LogFile
-        {
+        Function Write-LogFile {
             [CmdletBinding()]
-            Param
-            (
+            Param (
                 # The Path of the file to write
                 [Parameter(Mandatory=$true)]
                 $Path,
@@ -101,110 +107,68 @@
                 $Message
             )
 
-
-        
             # Move the old log file over
-            if (Test-Path -Path $Path)
-            {
+            If (Test-Path -Path $Path) {
                 $logFile = Get-Item -Path $Path
 
                 # Convert log size to MB
                 $logFileSizeInMB = ($logFile.Length / 1mb)
 
-                if ($logFileSizeInMB -ge $MaxFileSizeMB)
-                {
-                    Move-Item -Path $Path -Destination "$($Path).old" -Force
+                If ($logFileSizeInMB -ge $MaxFileSizeMB) {
+                    Move-Item -Path $Path -Destination ($Path + ".old") -Force
                 }
-            }         
-
-            # If the write_ps_log_queue variable doesnt exist
-            if (-not(Test-Path variable:global:write_ps_log_queue))
-            {
-                $global:write_ps_log_queue = New-Object System.Collections.Queue
-                Write-Verbose "creating var write_ps_log_queue"
             }
 
-            try
-            {               
-                while ($global:write_ps_log_queue.Count -gt 0)
-                {
-                        # Peak at the message and try and write it
-                        Add-Content -Path $Path -Value ($global:write_ps_log_queue.Peek()) -ErrorAction Stop
+            Try {
+                # TODO: Fail after queue reaches a certain size.
+                While ($script:write_ps_log_queue.Count -gt 0) {
+                    # Peak at the message and try and write it
+                    $peek_results = $null
+                    $peek_results = $script:write_ps_log_queue.Peek()
+                    Add-Content -Path $Path -Value $peek_results -ErrorAction Stop
 
-                        # If no failure, remove from queue
-                        $global:write_ps_log_queue.Dequeue() | Out-Null
-
-                        Write-Verbose "Message de-queued and written to log file. $($global:write_ps_log_queue.Count) items remain in the queue."
+                    # If no failure, remove from queue
+                    $script:write_ps_log_queue.Dequeue() | Out-Null
+                    Write-Verbose ("Message de-queued and written to log file. " + $script:write_ps_log_queue.Count + " items remain in the queue.")
                 }
 
-                Add-Content -Path $Path -Value $Message -ErrorAction Stop
-            }
-            catch
-            {
-                 
+                Add-Content -Path $Path -Value $message -ErrorAction Stop | Out-Null
+            } Catch {
                 # Add the message to the queue
-                $global:write_ps_log_queue.Enqueue($Message)
+                Write-Debug $_
                 Write-Verbose "Log file busy, putting message in a queue."
+                $script:write_ps_log_queue.Enqueue($message) | Out-Null
             }
         }
         
-        $splathForWriteLogFile = @{
-            'Path' = $Path
-            'MaxFileSizeMB' = $MaxFileSizeMB
-            'Message' = $Message
+        If ($null -ne $Path) {
+            $write_log_file_params = @{
+                'Path' = $Path
+                'MaxFileSizeMB' = $MaxFileSizeMB
+                'Message' = $Message
+            }
+            Write-LogFile @write_log_file_params
         }
 
-        switch ($Method)
-        {
-            'DEBUG' { 
-                if ($showDebug)
-                { 
-                    Write-Verbose $Message
-                    
-                    if ($Path -ne $null)
-                    { 
-                        Write-LogFile @splathForWriteLogFile
-                    }
+        If($log_to_console) {
+            Switch ($Method) {
+                'DEBUG' {
+                    If ($showDebug) { Write-Verbose $Message }
                 }
-                
-            } 
-            'INFO' { 
-                if ($showInfo)
-                { 
-                    Write-Output $Message
-                    
-                    if ($Path -ne $null)
-                    { 
-                        Write-LogFile @splathForWriteLogFile
-                    }
+                'INFO' {
+                    If ($showInfo) { Write-Output $Message }
                 }
-            } 
-            'WARN' {
-                if ($showWarn)
-                { 
-                    Write-Warning $Message
-                    
-                    if ($Path -ne $null)
-                    { 
-                        Write-LogFile @splathForWriteLogFile
-                    }
+                'WARN' {
+                    If ($showWarn) { Write-Warning $Message }
                 }
-            } 
-            'ERROR' {
-                if ($showError)
-                { 
-                    Write-Error $Message
-                    
-                    if ($Path -ne $null)
-                    { 
-                        Write-LogFile @splathForWriteLogFile
-                    }
+                'ERROR' {
+                    If ($showError) { Write-Error $Message }
                 }
-            } 
+            }
         }
-
     }
-    End
-    {
+    End{
+        $script:write_ps_log_queue = $null
+        [System.GC]::Collect()
     }
 }
